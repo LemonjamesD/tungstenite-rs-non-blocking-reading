@@ -70,6 +70,9 @@ pub enum Error {
     #[error("HTTP format error: {0}")]
     #[cfg(feature = "handshake")]
     HttpFormat(#[from] http::Error),
+    /// Occurs when there is nothing to read when `try_read` is called
+    #[error("Nothing to read")]
+    FailedToRead,
 }
 
 impl From<str::Utf8Error> for Error {

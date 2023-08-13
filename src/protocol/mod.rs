@@ -203,6 +203,23 @@ impl<Stream: Read + Write> WebSocket<Stream> {
         self.context.read(&mut self.socket)
     }
 
+    /// Tries to read a message from stream.
+    ///
+    /// This will also queue responses to ping and close messages. These responses
+    /// will be written and flushed on the next call to [`read`](Self::read),
+    /// [`write`](Self::write) or [`flush`](Self::flush).
+    ///
+    /// # Closing the connection
+    /// When the remote endpoint decides to close the connection this will return
+    /// the close message with an optional close frame.
+    ///
+    /// You should continue calling [`read`](Self::read), [`write`](Self::write) or
+    /// [`flush`](Self::flush) to drive the reply to the close frame until [`Error::ConnectionClosed`]
+    /// is returned. Once that happens it is safe to drop the underlying connection.
+    pub fn try_read(&mut self) -> Result<Message> {
+        self.context.try_read(&mut self.socket)
+    }
+
     /// Writes and immediately flushes a message.
     /// Equivalent to calling [`write`](Self::write) then [`flush`](Self::flush).
     pub fn send(&mut self, message: Message) -> Result<()> {
@@ -407,6 +424,34 @@ impl WebSocketContext {
                 return Ok(message);
             }
         }
+    }
+
+    /// Tries to read a message in a non blocking way.
+    ///
+    /// This function sends pong and close responses automatically.
+    pub fn try_read<Stream>(&mut self, stream: &mut Stream) -> Result<Message>
+    where
+        Stream: Read + Write,
+    {
+        // Do not read from already closed connections.
+        self.state.check_not_terminated()?;
+
+        if self.additional_send.is_some() {
+            // Since we may get ping or close, we need to reply to the messages even during read.
+            // Thus we flush but ignore its blocking.
+            self.flush(stream).no_block()?;
+        } else if self.role == Role::Server && !self.state.can_read() {
+            self.state = WebSocketState::Terminated;
+            return Err(Error::ConnectionClosed);
+        }
+
+        // If we get here, either write blocks or we have nothing to write.
+        // Thus if read blocks, just let it return WouldBlock.
+        if let Some(message) = self.read_message_frame(stream)? {
+            trace!("Received message {}", message);
+            return Ok(message);
+        }
+        Err(Error::FailedToRead)
     }
 
     /// Write a message to the provided stream.
